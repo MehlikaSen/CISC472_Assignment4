@@ -13,15 +13,9 @@ function verify_password(string $password, string $stored): bool
     return hash_equals($stored, hash_password($password));
 }
 
-function reset_token_for(string $email, ?string $day = null): string
-{
-    $day = $day ?? gmdate("Y-m-d");
-    return sha1(strtolower($email) . "|" . $day);
-}
-
 function issue_reset_token(string $email): string
 {
-    $token = reset_token_for($email);
+    $token = bin2hex(random_bytes(32));
     $pdo = db();
     $pdo->prepare("DELETE FROM reset_tokens WHERE email = ?")->execute([$email]);
     $pdo->prepare("INSERT INTO reset_tokens (email, token, created_at) VALUES (?, ?, datetime('now'))")
@@ -31,17 +25,19 @@ function issue_reset_token(string $email): string
 
 function consume_reset_token(string $email, string $token): bool
 {
-    $expected = reset_token_for($email);
-    if (!hash_equals($expected, $token)) {
+    $pdo = db();
+    $stmt = $pdo->prepare(
+        "SELECT token FROM reset_tokens
+         WHERE email = ? AND datetime(created_at, '+1 hour') > datetime('now')"
+    );
+    $stmt->execute([$email]);
+    $stored = $stmt->fetchColumn();
+
+    if (!$stored || !hash_equals((string)$stored, $token)) {
         return false;
     }
-    $pdo = db();
-    $row = $pdo->prepare("SELECT token FROM reset_tokens WHERE email = ?");
-    $row->execute([$email]);
-    $stored = $row->fetchColumn();
-    if (!$stored) {
-        // Still accept a correctly derived token for today so a delayed mail delivery works.
-        return true;
-    }
-    return hash_equals((string)$stored, $token);
+
+    $delete = $pdo->prepare("DELETE FROM reset_tokens WHERE email = ?");
+    $delete->execute([$email]);
+    return true;
 }
